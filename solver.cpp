@@ -7,6 +7,11 @@
 #include <random>
 #include <chrono>
 #include <algorithm>
+#include <future>
+#include <vector>
+#include <C:\Users\robbe\Desktop\Code\FluidGPU.cu>
+#include <cuda_runtime.h>
+
 
 #define XMIN -2
 #define YMIN -2
@@ -19,25 +24,29 @@
 #define NUMCELLS 64000 //Should be GRIDSIZE cubed
 #define GRAVITY -9.8 // gravity acceleration m/s^2
 #define SOUND 1450.0 // speed of sound in m/s
-#define RHO_0 10000 //reference density of water in kg/m^3
+#define RHO_0 9550 //reference density of water in kg/m^3
 #define P_0 101325 //reference pressure of water in Pa
-#define DIFF 0.0000001 //diffusion magnitude
+#define DIFF 0//0.0000001 //diffusion magnitude
 
 #define ALPHA_FLUID -0.01e2  //viscosity for fluid
-#define ALPHA_BOUNDARY 500e-2 //viscosity for boundary (should be high to prevent penetration)
+#define ALPHA_BOUNDARY 2000e-1 //viscosity for boundary (should be high to prevent penetration)
+
+#define ALPHA_LAMINAR_FLUID -1.0e0  //viscosity for fluid
+#define ALPHA_LAMINAR_BOUNDARY 0e0 //viscosity for boundary (should be high to prevent penetration)
+
 #define BDENSFACTOR 1.5 //Density is increased in boundary particles
 
-#define C1 3.0e-0  //stress tensor constants for granular material
-#define C2 3e5
-#define C3 1.2e1
+#define C1 1.5e1  //stress tensor constants for granular material
+#define C2 -0e5//1e3
+#define C3 -0e3//1e0
 #define PHI 1.23 //friction angle (radians)
-#define KC 15000 //cohesion
+#define KC 1e3 //cohesion
 
 //#define GAMMASTRETCH 0.99
 //#define GAMMACOMPRESS 0.1
 //#define ALPHA 1.0
 
-#define DT 0.0004 //Time step size
+#define DT 0.0005 //Time step size
 
 
 
@@ -195,6 +204,9 @@ public:
 	float newdelpressy;
 	float newdelpressx;
 	float newsigma=0;
+	float frictionx = 0;
+	float frictiony = 0;
+	float frictionz = 0;
 	//float newspringlength = 0.06;
 
 	float vel_grad[3][3] = {0}; //velocity gradient field
@@ -304,7 +316,8 @@ public:
 	//calculate pressure from current density
 	void calculate_pressure(void) {
 		press = 1000*pow(SOUND,0)*RHO_0/7.0*(pow(dens / RHO_0, 7) - 1);   //b*[(rho/rho0)^gamma -1]     gamma = 7, ref density = 1, b = speed of sound in medium squared at reference density
-			//press = 101325 * (pow(dens / RHO_0, 7));// *pow(10, 30);
+		//press*= (press >= 0);
+																		  //press = 101325 * (pow(dens / RHO_0, 7));// *pow(10, 30);
 	}
 
 	float calculate_sigma(Particle P) {
@@ -335,14 +348,17 @@ public:
 				ycoord = ycoord + DT*yvel + DIFF*diffusiony;
 				zcoord = zcoord + DT*zvel + DIFF*diffusionz;
 
-				xvel = (xvel + DT*xacc + DT*(stress_accel[0]));
-				yvel = (yvel + DT*yacc + DT*(stress_accel[1]));
+				xvel = (xvel + DT*xacc + DT*(stress_accel[0]))-((xvel + DT*xacc + DT*(stress_accel[0]))>0)*0.003 + ((xvel + DT*xacc + DT*(stress_accel[0]))<0)*0.003;
+				xvel *= (abs(xvel) > 0.003);
+				yvel = (yvel + DT*yacc + DT*(stress_accel[1])) - ((yvel + DT*yacc + DT*(stress_accel[1]))>0)*0.003 + ((yvel + DT*yacc + DT*(stress_accel[1]))<0)*0.003;
+				yvel *= (abs(yvel) > 0.003);
 				zvel = (zvel + DT*zacc + DT*(stress_accel[2]));
+				zvel *= (abs(zvel) > 0.003);
 
 				//Acceleration due to grav
-				xacc = -(300.0 / dens)*delpressx;
-				yacc = -(300.0 / dens)*delpressy;
-				zacc = GRAVITY + (-300.0 / dens)*delpressz;
+				xacc = -(150.0 / dens)*delpressx;
+				yacc = -(150.0 / dens)*delpressy;
+				zacc = GRAVITY + (-150.0 / dens)*delpressz;
 			}
 		}
 		flag = false; //reset flag for next timestep
@@ -473,17 +489,22 @@ const int tpts = 10000;  //number of time points
 const int ncoord = (npts) * 3; //number of coordinates
 const int nbcoord = nbpts * 3; //number of coordinates
 const int nscoord = nspts * 3; //number of coordinates
+list cells[NUMCELLS]; //set up a grid
 
-float sneighbour[nspts][nspts]; //keep track of distances between solid particles
+//__global__ void mykernel(void) {
+//	std::cout << "l";
+//}
 
 int main(int argc, char **argv)
 {
+	
+	//mykernel<<<1, 1>>>();
 
 	float pts[ncoord]; //Array of particle coordinates for visit_writer
 	float bpts[nbcoord]; //Array of boundary coordinates for visit_writer
 	float spts[nscoord]; //Array of solid coordinates for visit_writer	
 
-	list cells[NUMCELLS]; //set up a grid
+	
 
 	//Set up Solid Particles
 	Particle *SPptr[nspts];
@@ -536,22 +557,24 @@ int main(int argc, char **argv)
 
 	//Storage for output
 	int vardims[] = { 1 , 1};   // Two scalars
-	int vardims2[] = { 1 };   // One scalar
+	int vardims2[] = { 1,1,1 };   // Three scalars
 	int vardims3[] = { 1,1,1};
 	
 	float a[npts];
 	float b[npts];
 	float a2[nbpts];
+	float b2[nbpts];
+	float c2[nbpts];
 	float a3[nspts];
 	float b3[nspts];
 	float c3[nspts];
 
 	const char * const varnames[] = { "density", "zacc"};
-	const char * const varnames2[] = { "density"};
-	const char * const varnames3[] = { "stress_accel_x","stress_accel_y","stress_accel_z" };
+	const char * const varnames2[] = { "Normal_x","Normal_y","Normal_z"};
+	const char * const varnames3[] = { "stress_accel_x","pressure_accel_x","velocity_magnitude" };
 
 	float *arrays[] = { (float*)a, (float*)b };
-	float *arrays2[] = { (float*)a2};
+	float *arrays2[] = { (float*)a2,(float*)b2 ,(float*)c2 };
 	float *arrays3[] = { (float*)a3, (float*)b3, (float*)c3 };
 	
 	for (int t = 0; t < tpts; t++) {  //time steps
@@ -562,131 +585,148 @@ int main(int argc, char **argv)
 		auto start = std::chrono::high_resolution_clock::now();
 
 		/////////Search for neighbours
-		for (int i = 0; i < NUMCELLS; i++) {
-			node *N = cells[i].head; //check current cell
-			//int pos = 1;
-			while (N != NULL) {
-				
-				float tempdens = 0; 
-				float tempdelpressx = 0;
-				float tempdelpressy = 0;
-				float tempdelpressz = 0;
-				float tempsigma = 0;
-				float tempdiffusionx = 0;
-				float tempdiffusiony = 0;
-				float tempdiffusionz = 0;
-				
-				N->node::data.vel_grad[0][0] = N->node::data.vel_grad[0][1] = N->node::data.vel_grad[0][2] = 0;
-				N->node::data.vel_grad[1][0] = N->node::data.vel_grad[1][1] = N->node::data.vel_grad[1][2] = 0;
-				N->node::data.vel_grad[2][0] = N->node::data.vel_grad[2][1] = N->node::data.vel_grad[2][2] = 0;
-				N->node::data.stress_accel[0] = N->node::data.stress_accel[1] = N->node::data.stress_accel[2] = 0;
+		std::vector<std::future<int>> futures;
+		for (int j = 0; j < NUMCELLS; j+=125) {
+			futures.push_back(std::async(std::launch::async, [](int j) {
+				for (int i = j; i < j+125; i ++) {
+					node *N = cells[i].head; //check current cell
+					//int pos = 1;
+					while (N != NULL) {
 
-				for (int j = i-1; j <= i+1; j++) {
-					for (int k = -GRIDSIZE; k <= GRIDSIZE; k += GRIDSIZE) {
-						for (int l = -GRIDSIZE*GRIDSIZE; l <= GRIDSIZE*GRIDSIZE; l += GRIDSIZE*GRIDSIZE) {
-							if (j + k + l >= 0 && j + k + l < NUMCELLS &&  i+j>= 0 && i + k >= 0 && i + l >= 0) {
-								node *N2 = cells[j + k + l].head; //compare with all neighbour cells
-								while (N2 != NULL) {
-									float ds = N->node::data.distance(N2->node::data);
-									if (ds <= (2*cutoff) && ds > 0) {
+						float tempdens = 0;
+						float tempdelpressx = 0;
+						float tempdelpressy = 0;
+						float tempdelpressz = 0;
+						float tempsigma = 0;
+						float tempdiffusionx = 0;
+						float tempdiffusiony = 0;
+						float tempdiffusionz = 0;
+						float tempfrictionx = 0;
+						float tempfrictiony = 0;
+						float tempfrictionz = 0;
 
-										float k = kernel(ds);
-										float rabx = N->node::data.rab_x(N2->node::data);
-										float raby = N->node::data.rab_y(N2->node::data);
-										float rabz = N->node::data.rab_z(N2->node::data);
-										float vabx = N->node::data.vab_x(N2->node::data);
-										float vaby = N->node::data.vab_y(N2->node::data);
-										float vabz = N->node::data.vab_z(N2->node::data);
-										float dkx = kernel_derivative(ds)*rabx/ds;
-										float dky = kernel_derivative(ds)*raby/ds;
-										float dkz = kernel_derivative(ds)*rabz/ds;
-										
-										float dkxtest = kernel_test(ds)*rabx / ds;
-										float dkytest = kernel_test(ds)*raby / ds;
-										float dkztest = kernel_test(ds)*rabz / ds;
+						N->node::data.vel_grad[0][0] = N->node::data.vel_grad[0][1] = N->node::data.vel_grad[0][2] = 0;
+						N->node::data.vel_grad[1][0] = N->node::data.vel_grad[1][1] = N->node::data.vel_grad[1][2] = 0;
+						N->node::data.vel_grad[2][0] = N->node::data.vel_grad[2][1] = N->node::data.vel_grad[2][2] = 0;
+						N->node::data.stress_accel[0] = N->node::data.stress_accel[1] = N->node::data.stress_accel[2] = 0;
 
-										float d = dot_prod(vabx, vaby, vabz, rabx, raby, rabz);
-										float d2 = pow(ds, 2);
-										float s = (ALPHA_FLUID * SOUND * (cutoff * (d / (d2 + 0.01*pow(cutoff, 2))) +50*1.0/SOUND*pow(cutoff * (d / (d2 + 0.01*pow(cutoff, 2))),2))/ ((N->node::data.dens + N2->node::data.dens) / 2.0)) *(d < 0)*(1 + (!N->node::data.boundary)*(N2->node::data.boundary) * ALPHA_BOUNDARY);
-										
-										float dpx = (N2->node::data.press / pow(N2->node::data.dens, 2) + N->node::data.press / pow(N->node::data.dens, 2) + s)*dkx;
-										float dpy = (N2->node::data.press / pow(N2->node::data.dens, 2) + N->node::data.press / pow(N->node::data.dens, 2) + s)*dky;
-										float dpz = (N2->node::data.press / pow(N2->node::data.dens, 2) + N->node::data.press / pow(N->node::data.dens, 2) + s)*dkz;
-										
-										//if (N->node::data.solid && N2->node::data.solid) {
-											N->node::data.vel_grad[0][0] += -vabx*dkxtest / N2->node::data.dens;
-											N->node::data.vel_grad[0][1] += -vaby*dkxtest / N2->node::data.dens;
-											N->node::data.vel_grad[0][2] += -vabz*dkxtest / N2->node::data.dens;
-											N->node::data.vel_grad[1][0] += -vabx*dkytest / N2->node::data.dens;
-											N->node::data.vel_grad[1][1] += -vaby*dkytest / N2->node::data.dens;
-											N->node::data.vel_grad[1][2] += -vabz*dkytest / N2->node::data.dens;
-											N->node::data.vel_grad[2][0] += -vabx*dkztest / N2->node::data.dens;
-											N->node::data.vel_grad[2][1] += -vaby*dkztest / N2->node::data.dens;
-											N->node::data.vel_grad[2][2] += -vabz*dkztest / N2->node::data.dens;
+						for (int j = i - 1; j <= i + 1; j++) {
+							for (int k = -GRIDSIZE; k <= GRIDSIZE; k += GRIDSIZE) {
+								for (int l = -GRIDSIZE*GRIDSIZE; l <= GRIDSIZE*GRIDSIZE; l += GRIDSIZE*GRIDSIZE) {
+									if (j + k + l >= 0 && j + k + l < NUMCELLS &&  i + j >= 0 && i + k >= 0 && i + l >= 0) {
+										node *N2 = cells[j + k + l].head; //compare with all neighbour cells
+										while (N2 != NULL) {
+											float ds = N->node::data.distance(N2->node::data);
+											if (ds <= (2 * cutoff) && ds > 0) {
 
-											N->node::data.stress_accel[0] +=  (N->node::data.stress_tensor[0][0] * dkxtest + N->node::data.stress_tensor[0][1] * dkytest + N->node::data.stress_tensor[0][2] * dkztest) / pow(N->node::data.dens, 2) + (N2->node::data.stress_tensor[0][0] * dkxtest + N2->node::data.stress_tensor[0][1] * dkytest + N2->node::data.stress_tensor[0][2] * dkztest) / pow(N2->node::data.dens, 2);
-											N->node::data.stress_accel[1] += (N->node::data.stress_tensor[1][0] * dkxtest + N->node::data.stress_tensor[1][1] * dkytest + N->node::data.stress_tensor[1][2] * dkztest) / pow(N->node::data.dens, 2) + (N2->node::data.stress_tensor[1][0] * dkxtest + N2->node::data.stress_tensor[1][1] * dkytest + N2->node::data.stress_tensor[1][2] * dkztest) / pow(N2->node::data.dens, 2);
-											N->node::data.stress_accel[2] +=  (N->node::data.stress_tensor[2][0] * dkxtest + N->node::data.stress_tensor[2][1] * dkytest + N->node::data.stress_tensor[2][2] * dkztest) / pow(N->node::data.dens, 2) + (N2->node::data.stress_tensor[2][0] * dkxtest + N2->node::data.stress_tensor[2][1] * dkytest + N2->node::data.stress_tensor[2][2] * dkztest) / pow(N2->node::data.dens, 2);
+												float k = kernel(ds);
+												float rabx = N->node::data.rab_x(N2->node::data);
+												float raby = N->node::data.rab_y(N2->node::data);
+												float rabz = N->node::data.rab_z(N2->node::data);
+												float vabx = N->node::data.vab_x(N2->node::data);
+												float vaby = N->node::data.vab_y(N2->node::data);
+												float vabz = N->node::data.vab_z(N2->node::data);
+												float dkx = kernel_derivative(ds)*rabx / ds;
+												float dky = kernel_derivative(ds)*raby / ds;
+												float dkz = kernel_derivative(ds)*rabz / ds;
 
-									//	}
-										tempdens += k*(1 + float(!N->node::data.boundary)*float(N2->node::data.boundary)*BDENSFACTOR);
-										tempdelpressx += dpx;
-										tempdelpressy += dpy;
-										tempdelpressz += dpz;
-										tempdiffusionx += 1 / N2->node::data.dens*dkx;
-										tempdiffusiony += 1 / N2->node::data.dens*dky;
-										tempdiffusionz += 1 / N2->node::data.dens*dkz;
+												float dkxtest = kernel_test(ds)*rabx / ds;
+												float dkytest = kernel_test(ds)*raby / ds;
+												float dkztest = kernel_test(ds)*rabz / ds;
+
+												float d = dot_prod(vabx, vaby, vabz, rabx, raby, rabz);
+												float d2 = pow(ds, 2);
+												float s = (ALPHA_FLUID * SOUND * (cutoff * (d / (d2 + 0.01*pow(cutoff, 2))) + 50 * 1.0 / SOUND*pow(cutoff * (d / (d2 + 0.01*pow(cutoff, 2))), 2)) / ((N->node::data.dens + N2->node::data.dens) / 2.0)) *(d < 0)*(1 + (!N->node::data.boundary)*(N2->node::data.boundary) * ALPHA_BOUNDARY);
+												float s2 = ALPHA_LAMINAR_FLUID * SOUND * cutoff / (N->node::data.dens + N2->node::data.dens)*d*(d < 0) / (d2 + 0.01*pow(cutoff, 2))*(1 + (!N->node::data.boundary)*(N2->node::data.boundary) *ALPHA_LAMINAR_BOUNDARY); //laminar
+
+												float dpx = (N2->node::data.press / pow(N2->node::data.dens, 2) + N->node::data.press / pow(N->node::data.dens, 2) + s + s2)*dkx;
+												float dpy = (N2->node::data.press / pow(N2->node::data.dens, 2) + N->node::data.press / pow(N->node::data.dens, 2) + s + s2)*dky;
+												float dpz = (N2->node::data.press / pow(N2->node::data.dens, 2) + N->node::data.press / pow(N->node::data.dens, 2) + s + s2)*dkz;
+
+												//if (N->node::data.solid && N2->node::data.solid) {
+												N->node::data.vel_grad[0][0] += -vabx*dkxtest / N2->node::data.dens;
+												N->node::data.vel_grad[0][1] += -vaby*dkxtest / N2->node::data.dens;
+												N->node::data.vel_grad[0][2] += -vabz*dkxtest / N2->node::data.dens;
+												N->node::data.vel_grad[1][0] += -vabx*dkytest / N2->node::data.dens;
+												N->node::data.vel_grad[1][1] += -vaby*dkytest / N2->node::data.dens;
+												N->node::data.vel_grad[1][2] += -vabz*dkytest / N2->node::data.dens;
+												N->node::data.vel_grad[2][0] += -vabx*dkztest / N2->node::data.dens;
+												N->node::data.vel_grad[2][1] += -vaby*dkztest / N2->node::data.dens;
+												N->node::data.vel_grad[2][2] += -vabz*dkztest / N2->node::data.dens;
+
+												N->node::data.stress_accel[0] += (N->node::data.stress_tensor[0][0] * dkxtest + N->node::data.stress_tensor[0][1] * dkytest + N->node::data.stress_tensor[0][2] * dkztest) / pow(N->node::data.dens, 2) + (N2->node::data.stress_tensor[0][0] * dkxtest + N2->node::data.stress_tensor[0][1] * dkytest + N2->node::data.stress_tensor[0][2] * dkztest) / pow(N2->node::data.dens, 2);
+												N->node::data.stress_accel[1] += (N->node::data.stress_tensor[1][0] * dkxtest + N->node::data.stress_tensor[1][1] * dkytest + N->node::data.stress_tensor[1][2] * dkztest) / pow(N->node::data.dens, 2) + (N2->node::data.stress_tensor[1][0] * dkxtest + N2->node::data.stress_tensor[1][1] * dkytest + N2->node::data.stress_tensor[1][2] * dkztest) / pow(N2->node::data.dens, 2);
+												N->node::data.stress_accel[2] += (N->node::data.stress_tensor[2][0] * dkxtest + N->node::data.stress_tensor[2][1] * dkytest + N->node::data.stress_tensor[2][2] * dkztest) / pow(N->node::data.dens, 2) + (N2->node::data.stress_tensor[2][0] * dkxtest + N2->node::data.stress_tensor[2][1] * dkytest + N2->node::data.stress_tensor[2][2] * dkztest) / pow(N2->node::data.dens, 2);
+
+												//	}
+												tempdens += k*(1 + float(!N->node::data.boundary)*float(N2->node::data.boundary)*BDENSFACTOR);
+												tempdelpressx += dpx;
+												tempdelpressy += dpy;
+												tempdelpressz += dpz;
+												tempdiffusionx += 1 / N2->node::data.dens*dkx;
+												tempdiffusiony += 1 / N2->node::data.dens*dky;
+												tempdiffusionz += 1 / N2->node::data.dens*dkz;
+											}
+											N2 = N2->next;
+										}
 									}
-									N2 = N2->next;
 								}
 							}
 						}
-					}
-				}
-				////////////////Neighbour check done////////////////////
-				///////////////Calculate final density and pressure///////////
-				N->node::data.newdens = (tempdens);
-				N->node::data.newdelpressx = tempdelpressx;
-				N->node::data.newdelpressy = tempdelpressy;
-				N->node::data.newdelpressz = tempdelpressz;
-				N->node::data.newsigma = tempsigma;
-				N->node::data.diffusionx = tempdiffusionx;
-				N->node::data.diffusiony = tempdiffusiony;
-				N->node::data.diffusionz = tempdiffusionz;
-				
-				if (N->node::data.solid) {
-					float tr = 0; //trace of strain rate
-					float tr2 = 0; //trace of stress tensor
-					float tr3 = 0; //trace of stress tensor squared
-					float tr4 = 0; //trace of stress tensor times strain rate
-					float tr5 = 0; //trace of strain rate squared
-					for (int p = 0; p < 3; p++) {
-						for (int q = 0; q < 3; q++) {
-							N->node::data.strain_rate[p][q] = 0.5*(N->node::data.vel_grad[p][q] + N->node::data.vel_grad[q][p]);
-							N->node::data.stress_tensor_squared[p][q] = (N->node::data.stress_tensor[p][0] * N->node::data.stress_tensor[0][q] + N->node::data.stress_tensor[p][1] * N->node::data.stress_tensor[1][q] + N->node::data.stress_tensor[p][2] * N->node::data.stress_tensor[2][q]);
-							N->node::data.strain_rate_squared[p][q] = (N->node::data.strain_rate[p][0] * N->node::data.strain_rate[0][q] + N->node::data.strain_rate[p][1] * N->node::data.strain_rate[1][q] + N->node::data.strain_rate[p][2] * N->node::data.strain_rate[2][q]);
-							tr4 += N->node::data.stress_tensor[p][q] * N->node::data.strain_rate[q][p];
-						}
-						tr += N->node::data.strain_rate[p][p];
-						tr2 += N->node::data.stress_tensor[p][p];
-						tr3 += N->node::data.stress_tensor_squared[p][p];
-						tr5+= N->node::data.strain_rate_squared[p][p];
-						
-					}
-					float J2 = 0.5*(tr2 + tr3);
+						////////////////Neighbour check done////////////////////
+						///////////////Calculate final density and pressure///////////
+						N->node::data.newdens = (tempdens);
+						N->node::data.newdelpressx = tempdelpressx;
+						N->node::data.newdelpressy = tempdelpressy;
+						N->node::data.newdelpressz = tempdelpressz;
+						N->node::data.newsigma = tempsigma;
+						N->node::data.diffusionx = tempdiffusionx;
+						N->node::data.diffusiony = tempdiffusiony;
+						N->node::data.diffusionz = tempdiffusionz;
+
+						if (N->node::data.solid) {
+							float tr = 0; //trace of strain rate
+							float tr2 = 0; //trace of stress tensor
+							float tr3 = 0; //double dot of stress tensor
+							float tr4 = 0; //trace of stress tensor times strain rate
+							float tr5 = 0; //double dot of strain rate
+							for (int p = 0; p < 3; p++) {
+								for (int q = 0; q < 3; q++) {
+									N->node::data.strain_rate[p][q] = 0.5*(N->node::data.vel_grad[p][q] + N->node::data.vel_grad[q][p]);
+									N->node::data.stress_tensor_squared[p][q] = pow(N->node::data.stress_tensor[p][q], 2);
+									tr3 += 0.5*N->node::data.stress_tensor_squared[p][q];
+									N->node::data.strain_rate_squared[p][q] = pow(N->node::data.strain_rate[p][q], 2);
+									tr5 += N->node::data.strain_rate_squared[p][q];
+									tr4 += N->node::data.stress_tensor[p][q] * N->node::data.strain_rate[q][p];
+								}
+								tr += N->node::data.strain_rate[p][p];
+								tr2 += N->node::data.stress_tensor[p][p];
 
 
-					for (int p = 0; p < 3; p++) {
-						for (int q = 0; q < 3; q++) {
-							N->node::data.stress_rate[p][q] = 3 * C1*N->node::data.press*(N->node::data.strain_rate[p][q] -1. / 3.*tr*(p == q))+ C1*C2*(tr4 + tr*N->node::data.press)/(pow(N->node::data.press,2) + 1e5)*N->node::data.stress_tensor[p][q] - C1*C3*(tr+tr5)*N->node::data.stress_tensor[p][q];
-							if (3*tan(PHI) / (sqrt(9 + 12 * pow(tan(PHI),2)))*N->node::data.press + KC / (sqrt(9 + 12 * pow(tan(PHI), 2))) < J2 && J2!=0 && N->node::data.press>0) {
-								N->node::data.stress_tensor[p][q] *= (3 * tan(PHI) / (sqrt(9 + 12 * pow(tan(PHI), 2)))*N->node::data.press + KC / (sqrt(9 + 12 * pow(tan(PHI), 2)))) / J2;
+
+							}
+
+							//	std::cout << N->node::data.press << "\n";
+							for (int p = 0; p < 3; p++) {
+								for (int q = 0; q < 3; q++) {
+									if (3 * tan(PHI) / (sqrt(9 + 12 * pow(tan(PHI), 2)))*N->node::data.press + KC / (sqrt(9 + 12 * pow(tan(PHI), 2))) < tr3 && tr3 != 0) {
+										N->node::data.stress_tensor[p][q] *= (3 * tan(PHI) / (sqrt(9 + 12 * pow(tan(PHI), 2)))*N->node::data.press + KC / (sqrt(9 + 12 * pow(tan(PHI), 2)))) / tr3;
+									}
+									N->node::data.stress_rate[p][q] = 3 * C1*(N->node::data.press)*(N->node::data.strain_rate[p][q] - 1. / 3.*tr*(p == q)) + C1*C2*(tr4 + tr*N->node::data.press) / (pow(N->node::data.press, 2) + 1e8)*N->node::data.stress_tensor[p][q] - C1*C3*sqrt(tr5)*N->node::data.stress_tensor[p][q];
+									//std::cout << tr4 << ", " << tr*N->node::data.press << "\n";
+
+								}
 							}
 						}
+
+						N = N->next;
 					}
 				}
-				N = N->next;
-			}
+			return 0; }
+			, j));
+		}
+		for (auto &e : futures) {
+			e.get();
 		}
 		
 		////////////////////Update positions////////////////////////////
@@ -695,7 +735,7 @@ int main(int argc, char **argv)
 			node *N = cells[i].head; //check current cell
 			int pos = 1;
 			while (N != NULL) {
-				kin = std::max(kin,sqrt(pow(N->node::data.xvel, 2) + pow(N->node::data.yvel, 2) + pow(N->node::data.zvel, 2)));
+				kin += sqrt(pow(N->node::data.xvel, 2) + pow(N->node::data.yvel, 2) + pow(N->node::data.zvel, 2))/nspts;
 				if (!N->node::data.flag && !N->node::data.boundary && !N->node::data.solid) {
 					pts[(3 * idx)] = N->node::data.xcoord;
 					pts[(3 * idx) + 1] = N->node::data.ycoord;
@@ -708,8 +748,9 @@ int main(int argc, char **argv)
 					bpts[(3 * idx2)] = N->node::data.xcoord;
 					bpts[(3 * idx2) + 1] = N->node::data.ycoord;
 					bpts[(3 * idx2) + 2] = N->node::data.zcoord;
-					a2[idx2] = (N->node::data).dens;
-					//b2[idx2] = (N->node::data).zacc;
+					a2[idx2] = (N->node::data).diffusionx;
+					b2[idx2] = (N->node::data).diffusiony;
+					c2[idx2] = (N->node::data).diffusionz;
 					idx2 += 1;
 				}
 
@@ -718,8 +759,8 @@ int main(int argc, char **argv)
 					spts[(3 * idx3) + 1] = N->node::data.ycoord;
 					spts[(3 * idx3) + 2] = N->node::data.zcoord;
 					a3[idx3] = (N->node::data).stress_accel[0];
-					b3[idx3] = (N->node::data).stress_accel[1];
-					c3[idx3] = (N->node::data).stress_accel[2];
+					b3[idx3] =  -(6.0 / (N->node::data).dens)*(N->node::data).delpressx;
+					c3[idx3] = sqrt(pow((N->node::data).xvel,2)+ pow((N->node::data).yvel,2) + pow((N->node::data).zvel,2));
 					idx3 += 1;
 				}
 
@@ -806,10 +847,10 @@ int main(int argc, char **argv)
 			oss << "C:\\Users\\robbe\\Desktop\\Code\\anim_boundary" << ".vtk";
 			std::string var = oss.str();
 			const char* cstr = var.c_str();
-			write_point_mesh(cstr, 0, nbpts, bpts, 1, vardims2, varnames2, arrays2);
+			write_point_mesh(cstr, 0, nbpts, bpts, 3, vardims2, varnames2, arrays2);
 		}
 
-		std::cout << "Max Kinetic Energy = " << kin << "\n\n";  //stability check
+		std::cout << "Average Kinetic Energy = " << kin << "\n\n";  //stability check
 		auto stop = std::chrono::high_resolution_clock::now();
 		auto duration = (stop - start)/1e9;
 		std::cout << "Execution time: "<< duration.count() << "\n";
